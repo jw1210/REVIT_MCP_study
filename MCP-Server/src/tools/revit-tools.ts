@@ -385,6 +385,203 @@ export function registerRevitTools(): Tool[] {
                 required: ["level"],
             },
         },
+
+        // 18. 取得所有視圖
+        {
+            name: "get_all_views",
+            description: "取得專案中所有視圖的清單，包含平面圖、天花圖、3D視圖、剖面圖等。可用於選擇要標註的視圖。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    viewType: {
+                        type: "string",
+                        description: "視圖類型篩選：FloorPlan（平面圖）、CeilingPlan（天花圖）、ThreeD（3D視圖）、Section（剖面圖）、Elevation（立面圖）",
+                    },
+                    levelName: {
+                        type: "string",
+                        description: "樓層名稱篩選（選填）",
+                    },
+                },
+            },
+        },
+
+        // 19. 取得目前視圖
+        {
+            name: "get_active_view",
+            description: "取得目前開啟的視圖資訊，包含視圖名稱、類型、樓層等。",
+            inputSchema: {
+                type: "object",
+                properties: {},
+            },
+        },
+
+        // 20. 切換視圖
+        {
+            name: "set_active_view",
+            description: "切換至指定的視圖。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    viewId: {
+                        type: "number",
+                        description: "要切換的視圖 Element ID",
+                    },
+                },
+                required: ["viewId"],
+            },
+        },
+
+        // 21. 選取元素
+        {
+            name: "select_element",
+            description: "在 Revit 中選取指定的元素，讓使用者可以視覺化確認目標元素。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    elementId: {
+                        type: "number",
+                        description: "要選取的元素 ID",
+                    },
+                },
+                required: ["elementId"],
+            },
+        },
+
+        // 22. 縮放至元素
+        {
+            name: "zoom_to_element",
+            description: "將視圖縮放至指定元素，讓使用者可以快速定位。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    elementId: {
+                        type: "number",
+                        description: "要縮放至的元素 ID",
+                    },
+                },
+                required: ["elementId"],
+            },
+        },
+
+        // 23. 測量距離
+        {
+            name: "measure_distance",
+            description: "測量兩個點之間的距離。回傳距離（公釐）。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    point1X: {
+                        type: "number",
+                        description: "第一點 X 座標（公釐）",
+                    },
+                    point1Y: {
+                        type: "number",
+                        description: "第一點 Y 座標（公釐）",
+                    },
+                    point1Z: {
+                        type: "number",
+                        description: "第一點 Z 座標（公釐），預設 0",
+                        default: 0,
+                    },
+                    point2X: {
+                        type: "number",
+                        description: "第二點 X 座標（公釐）",
+                    },
+                    point2Y: {
+                        type: "number",
+                        description: "第二點 Y 座標（公釐）",
+                    },
+                    point2Z: {
+                        type: "number",
+                        description: "第二點 Z 座標（公釐），預設 0",
+                        default: 0,
+                    },
+                },
+                required: ["point1X", "point1Y", "point2X", "point2Y"],
+            },
+        },
+
+        // 24. 取得牆資訊
+        {
+            name: "get_wall_info",
+            description: "取得牆的詳細資訊，包含厚度、長度、高度、位置線座標等。用於計算走廊淨寬。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    wallId: {
+                        type: "number",
+                        description: "牆的 Element ID",
+                    },
+                },
+                required: ["wallId"],
+            },
+        },
+
+        // 25. 建立尺寸標註
+        {
+            name: "create_dimension",
+            description: "在指定視圖中建立尺寸標註。需要指定視圖和兩個參考點。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    viewId: {
+                        type: "number",
+                        description: "要建立標註的視圖 ID（使用 get_active_view 或 get_all_views 取得）",
+                    },
+                    startX: {
+                        type: "number",
+                        description: "起點 X 座標（公釐）",
+                    },
+                    startY: {
+                        type: "number",
+                        description: "起點 Y 座標（公釐）",
+                    },
+                    endX: {
+                        type: "number",
+                        description: "終點 X 座標（公釐）",
+                    },
+                    endY: {
+                        type: "number",
+                        description: "終點 Y 座標（公釐）",
+                    },
+                    offset: {
+                        type: "number",
+                        description: "標註線偏移距離（公釐），預設 500",
+                        default: 500,
+                    },
+                },
+                required: ["viewId", "startX", "startY", "endX", "endY"],
+            },
+        },
+
+        // 26. 查詢指定位置附近的牆體
+        {
+            name: "query_walls_by_location",
+            description: "查詢指定座標附近的牆體，回傳牆的資訊包含厚度、位置線座標、以及內外面座標。用於走廊寬度精確測量。",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    x: {
+                        type: "number",
+                        description: "查詢中心點 X 座標（公釐）",
+                    },
+                    y: {
+                        type: "number",
+                        description: "查詢中心點 Y 座標（公釐）",
+                    },
+                    searchRadius: {
+                        type: "number",
+                        description: "搜尋半徑（公釐），預設 5000",
+                        default: 5000,
+                    },
+                    level: {
+                        type: "string",
+                        description: "樓層名稱（選填）",
+                    },
+                },
+                required: ["x", "y"],
+            },
+        },
     ];
 }
 

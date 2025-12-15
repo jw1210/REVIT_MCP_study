@@ -101,6 +101,42 @@ namespace RevitMCP.Core
                         result = GetRoomsByLevel(parameters);
                         break;
                     
+                    case "get_all_views":
+                        result = GetAllViews(parameters);
+                        break;
+                    
+                    case "get_active_view":
+                        result = GetActiveView();
+                        break;
+                    
+                    case "set_active_view":
+                        result = SetActiveView(parameters);
+                        break;
+                    
+                    case "select_element":
+                        result = SelectElement(parameters);
+                        break;
+                    
+                    case "zoom_to_element":
+                        result = ZoomToElement(parameters);
+                        break;
+                    
+                    case "measure_distance":
+                        result = MeasureDistance(parameters);
+                        break;
+                    
+                    case "get_wall_info":
+                        result = GetWallInfo(parameters);
+                        break;
+                    
+                    case "create_dimension":
+                        result = CreateDimension(parameters);
+                        break;
+                    
+                    case "query_walls_by_location":
+                        result = QueryWallsByLocation(parameters);
+                        break;
+                    
                     default:
                         throw new NotImplementedException($"未實作的命令: {request.CommandName}");
                 }
@@ -374,19 +410,11 @@ namespace RevitMCP.Core
                 }
 
                 // 建立邊界曲線
-                CurveArray curveArray = new CurveArray();
                 var points = pointsArray.Select(p => new XYZ(
                     p["x"]?.Value<double>() / 304.8 ?? 0,
                     p["y"]?.Value<double>() / 304.8 ?? 0,
                     0
                 )).ToList();
-
-                for (int i = 0; i < points.Count; i++)
-                {
-                    XYZ start = points[i];
-                    XYZ end = points[(i + 1) % points.Count];
-                    curveArray.Append(Line.CreateBound(start, end));
-                }
 
                 // 取得預設樓板類型
                 FloorType floorType = new FilteredElementCollector(doc)
@@ -399,8 +427,17 @@ namespace RevitMCP.Core
                     throw new Exception("找不到樓板類型");
                 }
 
-                // 建立樓板
-                Floor floor = doc.Create.NewFloor(curveArray, floorType, level, false);
+                // 建立 CurveLoop (Revit 2022+ 使用)
+                CurveLoop curveLoop = new CurveLoop();
+                for (int i = 0; i < points.Count; i++)
+                {
+                    XYZ start = points[i];
+                    XYZ end = points[(i + 1) % points.Count];
+                    curveLoop.Append(Line.CreateBound(start, end));
+                }
+
+                // 使用 Floor.Create (適用於 Revit 2022+)
+                Floor floor = Floor.Create(doc, new List<CurveLoop> { curveLoop }, floorType.Id, level.Id);
 
                 trans.Commit();
 
@@ -412,6 +449,7 @@ namespace RevitMCP.Core
                 };
             }
         }
+
 
         /// <summary>
         /// 修改元素參數
@@ -1073,6 +1111,447 @@ namespace RevitMCP.Core
             };
         }
 
+        /// <summary>
+        /// 取得所有視圖
+        /// </summary>
+        private object GetAllViews(JObject parameters)
+        {
+            Document doc = _uiApp.ActiveUIDocument.Document;
+            string viewTypeFilter = parameters["viewType"]?.Value<string>();
+            string levelNameFilter = parameters["levelName"]?.Value<string>();
+
+            var views = new FilteredElementCollector(doc)
+                .OfClass(typeof(View))
+                .Cast<View>()
+                .Where(v => !v.IsTemplate && v.CanBePrinted)
+                .Select(v =>
+                {
+                    string levelName = "";
+                    if (v.GenLevel != null)
+                    {
+                        levelName = v.GenLevel.Name;
+                    }
+
+                    return new
+                    {
+                        ElementId = v.Id.IntegerValue,
+                        Name = v.Name,
+                        ViewType = v.ViewType.ToString(),
+                        LevelName = levelName,
+                        Scale = v.Scale
+                    };
+                })
+                .Where(v => string.IsNullOrEmpty(viewTypeFilter) || 
+                            v.ViewType.ToLower().Contains(viewTypeFilter.ToLower()))
+                .Where(v => string.IsNullOrEmpty(levelNameFilter) || 
+                            v.LevelName.Contains(levelNameFilter))
+                .OrderBy(v => v.ViewType)
+                .ThenBy(v => v.Name)
+                .ToList();
+
+            return new
+            {
+                Count = views.Count,
+                Views = views
+            };
+        }
+
+        /// <summary>
+        /// 取得目前視圖
+        /// </summary>
+        private object GetActiveView()
+        {
+            View activeView = _uiApp.ActiveUIDocument.ActiveView;
+            Document doc = _uiApp.ActiveUIDocument.Document;
+
+            string levelName = "";
+            if (activeView.GenLevel != null)
+            {
+                levelName = activeView.GenLevel.Name;
+            }
+
+            return new
+            {
+                ElementId = activeView.Id.IntegerValue,
+                Name = activeView.Name,
+                ViewType = activeView.ViewType.ToString(),
+                LevelName = levelName,
+                Scale = activeView.Scale
+            };
+        }
+
+        /// <summary>
+        /// 切換視圖
+        /// </summary>
+        private object SetActiveView(JObject parameters)
+        {
+            int viewId = parameters["viewId"]?.Value<int>() ?? 0;
+            Document doc = _uiApp.ActiveUIDocument.Document;
+
+            View view = doc.GetElement(new ElementId(viewId)) as View;
+            if (view == null)
+            {
+                throw new Exception($"找不到視圖 ID: {viewId}");
+            }
+
+            _uiApp.ActiveUIDocument.ActiveView = view;
+
+            return new
+            {
+                Success = true,
+                ViewId = viewId,
+                ViewName = view.Name,
+                Message = $"已切換至視圖: {view.Name}"
+            };
+        }
+
+        /// <summary>
+        /// 選取元素
+        /// </summary>
+        private object SelectElement(JObject parameters)
+        {
+            int elementId = parameters["elementId"]?.Value<int>() ?? 0;
+            Document doc = _uiApp.ActiveUIDocument.Document;
+
+            Element element = doc.GetElement(new ElementId(elementId));
+            if (element == null)
+            {
+                throw new Exception($"找不到元素 ID: {elementId}");
+            }
+
+            // 選取元素
+            var elementIds = new List<ElementId> { new ElementId(elementId) };
+            _uiApp.ActiveUIDocument.Selection.SetElementIds(elementIds);
+
+            return new
+            {
+                Success = true,
+                ElementId = elementId,
+                ElementName = element.Name,
+                Category = element.Category?.Name,
+                Message = $"已選取元素: {element.Name} (ID: {elementId})"
+            };
+        }
+
+        /// <summary>
+        /// 縮放至元素
+        /// </summary>
+        private object ZoomToElement(JObject parameters)
+        {
+            int elementId = parameters["elementId"]?.Value<int>() ?? 0;
+            Document doc = _uiApp.ActiveUIDocument.Document;
+
+            Element element = doc.GetElement(new ElementId(elementId));
+            if (element == null)
+            {
+                throw new Exception($"找不到元素 ID: {elementId}");
+            }
+
+            // 顯示元素（會自動縮放）
+            var elementIds = new List<ElementId> { new ElementId(elementId) };
+            _uiApp.ActiveUIDocument.ShowElements(elementIds);
+
+            return new
+            {
+                Success = true,
+                ElementId = elementId,
+                ElementName = element.Name,
+                Message = $"已縮放至元素: {element.Name}"
+            };
+        }
+
+        /// <summary>
+        /// 測量距離
+        /// </summary>
+        private object MeasureDistance(JObject parameters)
+        {
+            double p1x = parameters["point1X"]?.Value<double>() ?? 0;
+            double p1y = parameters["point1Y"]?.Value<double>() ?? 0;
+            double p1z = parameters["point1Z"]?.Value<double>() ?? 0;
+            double p2x = parameters["point2X"]?.Value<double>() ?? 0;
+            double p2y = parameters["point2Y"]?.Value<double>() ?? 0;
+            double p2z = parameters["point2Z"]?.Value<double>() ?? 0;
+
+            // 轉換為英尺
+            XYZ point1 = new XYZ(p1x / 304.8, p1y / 304.8, p1z / 304.8);
+            XYZ point2 = new XYZ(p2x / 304.8, p2y / 304.8, p2z / 304.8);
+
+            double distanceFeet = point1.DistanceTo(point2);
+            double distanceMm = distanceFeet * 304.8;
+
+            return new
+            {
+                Distance = Math.Round(distanceMm, 2),
+                Unit = "mm",
+                Point1 = new { X = p1x, Y = p1y, Z = p1z },
+                Point2 = new { X = p2x, Y = p2y, Z = p2z }
+            };
+        }
+
+        /// <summary>
+        /// 取得牆資訊
+        /// </summary>
+        private object GetWallInfo(JObject parameters)
+        {
+            int wallId = parameters["wallId"]?.Value<int>() ?? 0;
+            Document doc = _uiApp.ActiveUIDocument.Document;
+
+            Wall wall = doc.GetElement(new ElementId(wallId)) as Wall;
+            if (wall == null)
+            {
+                throw new Exception($"找不到牆 ID: {wallId}");
+            }
+
+            // 取得牆的位置曲線
+            LocationCurve locCurve = wall.Location as LocationCurve;
+            Curve curve = locCurve?.Curve;
+
+            XYZ startPoint = curve?.GetEndPoint(0) ?? XYZ.Zero;
+            XYZ endPoint = curve?.GetEndPoint(1) ?? XYZ.Zero;
+
+            // 取得牆厚度
+            double thickness = wall.Width * 304.8; // 英尺 → 公釐
+
+            // 取得牆長度
+            double length = curve != null ? curve.Length * 304.8 : 0;
+
+            // 取得牆高度
+            Parameter heightParam = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM);
+            double height = heightParam != null ? heightParam.AsDouble() * 304.8 : 0;
+
+            return new
+            {
+                ElementId = wallId,
+                Name = wall.Name,
+                WallType = wall.WallType.Name,
+                Thickness = Math.Round(thickness, 2),
+                Length = Math.Round(length, 2),
+                Height = Math.Round(height, 2),
+                StartX = Math.Round(startPoint.X * 304.8, 2),
+                StartY = Math.Round(startPoint.Y * 304.8, 2),
+                EndX = Math.Round(endPoint.X * 304.8, 2),
+                EndY = Math.Round(endPoint.Y * 304.8, 2),
+                Level = doc.GetElement(wall.LevelId)?.Name
+            };
+        }
+
+        /// <summary>
+        /// 建立尺寸標註
+        /// </summary>
+        private object CreateDimension(JObject parameters)
+        {
+            Document doc = _uiApp.ActiveUIDocument.Document;
+            
+            int viewId = parameters["viewId"]?.Value<int>() ?? 0;
+            double startX = parameters["startX"]?.Value<double>() ?? 0;
+            double startY = parameters["startY"]?.Value<double>() ?? 0;
+            double endX = parameters["endX"]?.Value<double>() ?? 0;
+            double endY = parameters["endY"]?.Value<double>() ?? 0;
+            double offset = parameters["offset"]?.Value<double>() ?? 500;
+
+            View view = doc.GetElement(new ElementId(viewId)) as View;
+            if (view == null)
+            {
+                throw new Exception($"找不到視圖 ID: {viewId}");
+            }
+
+            using (Transaction trans = new Transaction(doc, "建立尺寸標註"))
+            {
+                trans.Start();
+
+                // 轉換座標
+                XYZ start = new XYZ(startX / 304.8, startY / 304.8, 0);
+                XYZ end = new XYZ(endX / 304.8, endY / 304.8, 0);
+
+                // 建立參考線
+                Line line = Line.CreateBound(start, end);
+
+                // 建立尺寸標註用的參考陣列
+                ReferenceArray refArray = new ReferenceArray();
+
+                // 使用 DetailCurve 作為參考
+                // 先建立兩個詳圖線作為參考點
+                XYZ perpDir = new XYZ(-(end.Y - start.Y), end.X - start.X, 0).Normalize();
+                double offsetFeet = offset / 304.8;
+
+                // 偏移後的標註線位置
+                XYZ dimLinePoint = start.Add(perpDir.Multiply(offsetFeet));
+                Line dimLine = Line.CreateBound(
+                    start.Add(perpDir.Multiply(offsetFeet)),
+                    end.Add(perpDir.Multiply(offsetFeet))
+                );
+
+                // 使用 NewDetailCurve 建立參考（建立足夠長的線段）
+                // 詳圖線應垂直於標註方向，作為標註的參考點
+                double lineLength = 1.0; // 1 英尺 = 約 305mm
+
+                // 使用 perpDir（垂直方向）來建立詳圖線
+                DetailCurve dc1 = doc.Create.NewDetailCurve(view, Line.CreateBound(
+                    start.Subtract(perpDir.Multiply(lineLength / 2)), 
+                    start.Add(perpDir.Multiply(lineLength / 2))));
+                DetailCurve dc2 = doc.Create.NewDetailCurve(view, Line.CreateBound(
+                    end.Subtract(perpDir.Multiply(lineLength / 2)), 
+                    end.Add(perpDir.Multiply(lineLength / 2))));
+
+                refArray.Append(dc1.GeometryCurve.Reference);
+                refArray.Append(dc2.GeometryCurve.Reference);
+
+                // 建立尺寸標註
+                Dimension dim = doc.Create.NewDimension(view, dimLine, refArray);
+
+                // 注意：保留詳圖線作為標註參考點（如需刪除請手動處理）
+
+                trans.Commit();
+
+                double dimValue = dim.Value.HasValue ? dim.Value.Value * 304.8 : 0;
+
+                return new
+                {
+                    DimensionId = dim.Id.IntegerValue,
+                    Value = Math.Round(dimValue, 2),
+                    Unit = "mm",
+                    ViewId = viewId,
+                    ViewName = view.Name,
+                    Message = $"成功建立尺寸標註: {Math.Round(dimValue, 0)} mm"
+                };
+            }
+        }
+
+        /// <summary>
+        /// 查詢指定位置附近的牆體
+        /// </summary>
+        private object QueryWallsByLocation(JObject parameters)
+        {
+            Document doc = _uiApp.ActiveUIDocument.Document;
+            
+            double centerX = parameters["x"]?.Value<double>() ?? 0;
+            double centerY = parameters["y"]?.Value<double>() ?? 0;
+            double searchRadius = parameters["searchRadius"]?.Value<double>() ?? 5000;
+            string levelName = parameters["level"]?.Value<string>();
+
+            // 轉換為英尺
+            XYZ center = new XYZ(centerX / 304.8, centerY / 304.8, 0);
+            double radiusFeet = searchRadius / 304.8;
+
+            // 取得所有牆
+            var wallCollector = new FilteredElementCollector(doc)
+                .OfClass(typeof(Wall))
+                .WhereElementIsNotElementType()
+                .Cast<Wall>();
+
+            // 如果指定樓層，過濾樓層
+            if (!string.IsNullOrEmpty(levelName))
+            {
+                var level = new FilteredElementCollector(doc)
+                    .OfClass(typeof(Level))
+                    .Cast<Level>()
+                    .FirstOrDefault(l => l.Name.Contains(levelName));
+
+                if (level != null)
+                {
+                    wallCollector = wallCollector.Where(w => w.LevelId == level.Id);
+                }
+            }
+
+            var nearbyWalls = new List<object>();
+
+            foreach (var wall in wallCollector)
+            {
+                LocationCurve locCurve = wall.Location as LocationCurve;
+                if (locCurve == null) continue;
+
+                Curve curve = locCurve.Curve;
+                XYZ startPoint = curve.GetEndPoint(0);
+                XYZ endPoint = curve.GetEndPoint(1);
+                XYZ midPoint = (startPoint + endPoint) / 2;
+
+                // 計算牆與查詢點的距離
+                double distance = center.DistanceTo(midPoint) * 304.8;
+                
+                // 計算點到線段的最近距離
+                XYZ wallDir = (endPoint - startPoint).Normalize();
+                XYZ toCenter = center - startPoint;
+                double proj = toCenter.DotProduct(wallDir);
+                double wallLength = curve.Length;
+                
+                XYZ closestPoint;
+                if (proj < 0)
+                    closestPoint = startPoint;
+                else if (proj > wallLength)
+                    closestPoint = endPoint;
+                else
+                    closestPoint = startPoint + wallDir * proj;
+                
+                double distToWall = center.DistanceTo(closestPoint) * 304.8;
+
+                if (distToWall <= searchRadius)
+                {
+                    // 取得牆厚度
+                    double thickness = wall.Width * 304.8;
+                    
+                    // 計算牆的方向向量（垂直於位置線）
+                    XYZ perpendicular = new XYZ(-wallDir.Y, wallDir.X, 0);
+                    
+                    // 計算內外面座標（假設位置線在中心）
+                    double halfThickness = wall.Width / 2;
+                    
+                    // 牆的兩個面
+                    XYZ face1Point = closestPoint + perpendicular * halfThickness;
+                    XYZ face2Point = closestPoint - perpendicular * halfThickness;
+
+                    nearbyWalls.Add(new
+                    {
+                        ElementId = wall.Id.IntegerValue,
+                        Name = wall.Name,
+                        WallType = wall.WallType.Name,
+                        Thickness = Math.Round(thickness, 2),
+                        Length = Math.Round(curve.Length * 304.8, 2),
+                        DistanceToCenter = Math.Round(distToWall, 2),
+                        // 位置線座標
+                        LocationLine = new
+                        {
+                            StartX = Math.Round(startPoint.X * 304.8, 2),
+                            StartY = Math.Round(startPoint.Y * 304.8, 2),
+                            EndX = Math.Round(endPoint.X * 304.8, 2),
+                            EndY = Math.Round(endPoint.Y * 304.8, 2)
+                        },
+                        // 最近點位置
+                        ClosestPoint = new
+                        {
+                            X = Math.Round(closestPoint.X * 304.8, 2),
+                            Y = Math.Round(closestPoint.Y * 304.8, 2)
+                        },
+                        // 兩側面座標（在最近點處）
+                        Face1 = new
+                        {
+                            X = Math.Round(face1Point.X * 304.8, 2),
+                            Y = Math.Round(face1Point.Y * 304.8, 2)
+                        },
+                        Face2 = new
+                        {
+                            X = Math.Round(face2Point.X * 304.8, 2),
+                            Y = Math.Round(face2Point.Y * 304.8, 2)
+                        },
+                        // 判斷牆是水平還是垂直
+                        Orientation = Math.Abs(wallDir.X) > Math.Abs(wallDir.Y) ? "Horizontal" : "Vertical"
+                    });
+                }
+            }
+
+            // 直接返回列表（已在搜尋時過濾距離）
+
+            return new
+            {
+                Count = nearbyWalls.Count,
+                SearchCenter = new { X = centerX, Y = centerY },
+                SearchRadius = searchRadius,
+                Walls = nearbyWalls
+            };
+        }
+
         #endregion
     }
 }
+
+
+
