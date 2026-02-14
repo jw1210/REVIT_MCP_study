@@ -129,6 +129,11 @@ namespace RevitMCP.Core
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                // 這是正常關閉，不需要視為錯誤
+                Logger.Info("[Socket] 訊息接收已停止 (服務已取消)");
+            }
             catch (Exception ex)
             {
                 Logger.Error("[Socket] 接收訊息錯誤", ex);
